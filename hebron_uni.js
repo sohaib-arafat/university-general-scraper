@@ -1,47 +1,88 @@
 const puppeteer = require('puppeteer');
-const fs = require('fs');
+const admin = require("firebase-admin");
+const fs = require("fs");
+admin.initializeApp({
+    credential: admin.credential.cert('service.json'),
+});
+const db = admin.firestore();
+const readline = require('readline');
 
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+async function promptUser(question) {
+    return new Promise((resolve) => {
+        rl.question(question, (answer) => {
+            resolve(answer);
+        });
+    });
+}
 
 async function main() {
-    const browser = await puppeteer.launch();
+    const url = await promptUser('Enter the URL to scrape: ');
+    const browser = await puppeteer.launch({ headless: "new" });
     const page = await browser.newPage();
 
-    await page.goto('https://www.hebron.edu/index.php/arts-dep-2/arts-dep1/arts-dep1-courses.html');
+    try {
+        await page.goto(url);
 
-    const arabicResultMap = await extractTextFromStrongElements(page);
-    await saveToJson(arabicResultMap, 'arabic_data.json');
+        const arabicResultMap = await extractTextFromStrongElements(page);
+        await saveToJson(arabicResultMap, 'arabic_data.json');
 
-    await clickButtonAndReload(page);
+        await clickButtonAndReload(page);
 
-    const englishResultMap = await extractTextFromStrongElements(page);
-    await saveToJson(englishResultMap, 'english_data.json');
+        const englishResultMap = await extractTextFromStrongElements(page);
+        await saveToJson(englishResultMap, 'english_data.json');
 
+        await browser.close();
+        await mergeJSONFiles();
+        await filterObjectsWithValidFields('data.json');
 
-    await browser.close();
-    await mergeJSONFiles();
-   await filterObjectsWithValidFields('data.json')
+        const continueExecution = await promptUser('Do you want to continue and add the major? (yes/no): ');
+
+        if (!continueExecution.toLowerCase().startsWith('y')) {
+            console.log('Execution aborted by user.');
+            return;
+        }
+
+        // await addMajor();
+        console.log('Execution completed successfully.');
+    } catch (error) {
+        console.error('An error occurred:', error);
+    } finally {
+        rl.close();
+    }
 }
+
 
 (async () => {
     await main();
 })();
+
 function filterObjectsWithValidFields(fileName) {
-     fs.readFile(fileName, 'utf8', (err, data) => {
+    fs.readFile(fileName, 'utf8', (err, data) => {
         if (err) {
             console.error(`Error reading file: ${err}`);
             return;
         }
 
         try {
-             const dataArray = JSON.parse(data);
+            const dataArray = JSON.parse(data);
 
-             const filteredArray = dataArray.filter(obj => {
+            const filteredArray = dataArray.filter(obj => {
                 return obj.name && obj.name.trim().length > 0 && obj.uniID && isValidUniID(obj.uniID);
             });
 
-             const updatedJson = JSON.stringify(filteredArray, null, 2);
+            const updatedJson = {
+                "major": {
+                    "name": 'hu_' + majorE.replace('department', 'bachelor'),
+                    courses: filteredArray
+                }
+            };
 
-             fs.writeFile(fileName, updatedJson, 'utf8', (err) => {
+            fs.writeFile(fileName, JSON.stringify(updatedJson, null, 2), 'utf8', (err) => {
                 if (err) {
                     console.error(`Error writing file: ${err}`);
                 } else {
@@ -54,9 +95,10 @@ function filterObjectsWithValidFields(fileName) {
     });
 }
 
- function isValidUniID(uniID) {
-      return uniID && uniID.trim().length > 0;
+function isValidUniID(uniID) {
+    return uniID && uniID.trim().length > 0;
 }
+
 async function extractTextFromStrongElements(page) {
     const strongElements = await page.$$('strong');
     const extractedObjectsArray = [];
@@ -86,7 +128,7 @@ function processArray(arr) {
         const currentMap = arr[i];
         const nextMap = arr[i + 1];
 
-        if (currentMap.name === '') {
+        if (currentMap.name === '' || currentMap.name === ' ' || currentMap.name === '  ' || currentMap.name === '   ' || currentMap.name === '    ') {
             if (nextMap) {
                 currentMap.name = nextMap.name;
                 arr.splice(i + 1, 1);
@@ -97,9 +139,14 @@ function processArray(arr) {
     return arr;
 }
 
+let majorE = ""
+let majorA = ""
+
 async function clickButtonAndReload(page) {
+    majorA = page.$eval('#sp-component > div > article > div.page-header > h1', element => element.textContent)
     await page.click('#sp-language > div > div > div > div > ul > li > a');
     await page.reload({waitUntil: 'domcontentloaded'});
+    majorE = snakeCase(await page.$eval('#sp-component > div > article > div.page-header > h1', element => element.textContent));
 }
 
 async function saveToJson(data, fileName) {
@@ -118,14 +165,14 @@ function mergeJSONFiles() {
             priority: 0,
             altName: null,
             uniID: arabicObj.id,
-            name: "hu_"+snakeCase(englishObj.name),
+            name: "hu_" + snakeCase(englishObj.name),
             translations: [{
                 altName: null,
                 fallback: true,
                 locale: 'ar',
                 region: 'SA',
                 name: arabicObj.name
-            },{
+            }, {
                 altName: null,
                 fallback: false,
                 locale: 'en',
@@ -147,6 +194,7 @@ function mergeJSONFiles() {
 
     fs.writeFileSync("data.json", JSON.stringify(mergedData, null, 2));
 }
+
 // function isValidDataObject(obj) {
 //     if (!obj || !obj.id || !obj.name || typeof obj.name !== 'object' || !obj.name.arabic || !obj.name.english) {
 //         return false;
@@ -168,39 +216,56 @@ function mergeJSONFiles() {
 function snakeCase(text) {
     text = text.trim().replace(/\W+/g, '_');
     return text.toLowerCase();
+
 }
-// async function addMajor() {
-//     const major = await readJsonFile("data.json")
-//     const {id} = await db.collection("files").add({
-//         "name": major['major'],
-//         "extn": "mjor",
-//         "showinDDM": true,
-//         "uniID": null,
-//         "priority": 0,
-//         "altName": null,
-//         "parent": {"name": "ptuk_faculty_of_information_technology", "id": "RlE5RmkII31eMNAeEBxR"}
-//     })
-//     for (const cors of major.subjects) {
-//         const query1 = await db.collection("files").where("uniID", "==", cors.uniID).get();
-//         if (query1.empty) {
-//             cors["parents"] = [{"name": major.major, "id": id}]
-//             await db.collection("files").doc().set(cors);
-//         } else {
-//             await query1.docs[0].ref.update({
-//                 "parents": admin.firestore.FieldValue.arrayUnion({
-//                     "name": major.major,
-//                     "id": id
-//                 })
-//             })
-//         }
-//     }
-// }
-// function readJsonFile(filename) {
-//     try {
-//         const data = ts.readFileSync(filename, 'utf8');
-//         return JSON.parse(data);
-//     } catch (error) {
-//         console.error('Error reading or parsing JSON file:', error);
-//         return null;
-//     }
-// }
+
+async function addMajor() {
+    const major = await readJsonFile("data.json")
+    const {id} = await db.collection("files").add({
+        "name": major['major'],
+        "extn": "mjor",
+        "showinDDM": true,
+        "uniID": null,
+        "priority": 0,
+        "altName": null,
+        "parent": {"name": "ptuk_faculty_of_information_technology", "id": "RlE5RmkII31eMNAeEBxR"},
+        translations: [{
+            altName: null,
+            fallback: true,
+            locale: 'ar',
+            region: 'SA',
+            name: majorA
+        }, {
+            altName: null,
+            fallback: false,
+            locale: 'en',
+            region: 'US',
+            name: majorE.replace('department', 'bachelor')
+        }
+        ]
+    })
+    for (const cors of major.courses) {
+        const query1 = await db.collection("files").where("uniID", "==", cors.uniID).get();
+        if (query1.empty) {
+            cors["parents"] = [{"name": major.major, "id": id}]
+            await db.collection("files").doc().set(cors);
+        } else {
+            await query1.docs[0].ref.update({
+                "parents": admin.firestore.FieldValue.arrayUnion({
+                    "name": major.major,
+                    "id": id
+                })
+            })
+        }
+    }
+}
+
+function readJsonFile(filename) {
+    try {
+        const data = fs.readFileSync(filename, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('Error reading or parsing JSON file:', error);
+        return null;
+    }
+}
