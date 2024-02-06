@@ -280,7 +280,7 @@ async function addMajor() {
         "uniID": null,
         "priority": 0,
         "altName": null,
-        "parent": {"name": "ppu_college_of_applied_professions", "id": "GoMhfZH8jt8GyLTCvlny"}
+        "parent": {"name": "school/faculty", "id": "id or DB refrence"}
     })
     for (const cors of major.subjects) {
         if(cors.name === "ppu_" || cors.name === "ppu_ " || cors.name === ""){
